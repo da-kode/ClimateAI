@@ -1,0 +1,268 @@
+import sys
+import os
+import requests
+from google import genai
+from google.genai.types import HttpOptions, Part
+from PyQt5.QtWidgets import QHBoxLayout, QApplication, QWidget, QLabel, QLineEdit, QPushButton, QVBoxLayout, QTextEdit, QCalendarWidget, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem
+from PyQt5.QtCore import Qt, QDate, QRectF, QTimer
+from PyQt5.QtGui import QPixmap, QPainter, QTransform
+
+# Set up Google Cloud credentials
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "./alohadata-team2-a97d6449f927.json"
+os.environ["GOOGLE_CLOUD_PROJECT"] = "alohadata-team2"
+os.environ["GOOGLE_CLOUD_LOCATION"] = "us-central1"
+os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "True"
+
+client = genai.Client(http_options=HttpOptions(api_version="v1"))
+
+# API Tokens
+api_token = "cfa95cd40d4fe79ee2b1ce0fea08afaf"
+api_base_url = "https://api.hcdp.ikewai.org"
+header = {"Authorization": f"Bearer {api_token}"}
+
+
+# --- Load Image ---
+IMAGE_PATH = "Hawaii_Map.png"
+
+class MapWidget(QGraphicsView):
+  """PyQt5 widget for displaying Hawaii map inside chatbot UI."""
+  def __init__(self):
+      super().__init__()
+      self.scene = QGraphicsScene(self)
+      self.setScene(self.scene)
+
+
+      self.pixmap = QPixmap(IMAGE_PATH)
+      self.item = QGraphicsPixmapItem(self.pixmap)
+      self.scene.addItem(self.item)
+      self.setSceneRect(QRectF(self.pixmap.rect()))
+
+      # Ensure map is properly sized inside UI
+      self.setMinimumSize(600, 600)
+      self.setRenderHint(QPainter.Antialiasing)  # FIX: Use QPainter instead of QGraphicsView
+
+      # Enable mouse tracking to update coordinates while hovering
+      self.setMouseTracking(True)
+
+      self.selected_lat = 21.539576  # Default coordinates
+      self.selected_lng = -157.965820
+
+  def mouseMoveEvent(self, event):
+      """Update latitude and longitude near the cursor while hovering over the map."""
+      x, y = event.pos().x(), event.pos().y()
+      lat, lon = self.map_to_geo(x, y)
+
+      # Ensure label exists in parent class before updating
+      if hasattr(self.parent(), "coord_label"):
+          self.parent().coord_label.setText(f"Lat: {lat:.4f}, Lon: {lon:.4f}")
+          self.parent().coord_label.move(event.globalX() + 15, event.globalY() + 15)  # Slight offset for visibility
+          self.parent().coord_label.show()
+
+  def mousePressEvent(self, event):
+      """Handle mouse clicks to update lat/lng for climate data retrieval."""
+      if event.button() == Qt.LeftButton:
+          x, y = event.pos().x(), event.pos().y()
+          lat, lon = self.map_to_geo(x, y)  # Convert map click to lat/lng
+
+          self.selected_lat = lat
+          self.selected_lng = lon
+
+          print(f"User selected location: Lat {lat}, Lon {lon}")  # Debugging output
+
+  def map_to_geo(self, x, y):
+      """Convert pixel coordinates to lat/lng (approximate scaling)."""
+      min_lon, max_lon = -160, -154
+      min_lat, max_lat = 18.5, 23.5
+
+      lon = min_lon + (x / self.pixmap.width()) * (max_lon - min_lon)
+      lat = max_lat - (y / self.pixmap.height()) * (max_lat - min_lat)
+      return lat, lon
+class ClimateChatBot(QWidget):
+ def __init__(self):
+     super().__init__()
+     self.initUI()
+
+ def close_app(self):
+     """Exit the application."""
+     self.close()
+
+ def initUI(self):
+     """Sets up chatbot window, positioning elements as requested."""
+     self.setWindowTitle("HCDP Climate Data Chatbot")
+     self.showFullScreen()  # Launch in full-screen mode
+
+     # Map widget positioned in the upper left
+     self.map_label = QLabel("Click on the map to select location")
+     self.map_widget = MapWidget()
+
+     # Coordinate label for displaying lat/lng near cursor
+     self.coord_label = QLabel("", self)
+     self.coord_label.setStyleSheet("background-color: white; padding: 4px; border: 1px solid black;")
+     self.coord_label.hide()  # Initially hidden until hovering starts
+
+     # Climate information input fields positioned to the right of the map
+     self.date_label = QLabel("Select a date range:")
+     self.start_calendar = QCalendarWidget(self)
+     self.end_calendar = QCalendarWidget(self)
+
+     # User input for island selection
+     self.island_label = QLabel("Enter Island Code (KA, BI, MA, OA):")
+     self.island_input = QLineEdit(self)
+
+     # Get Stations Button & Output Field
+     self.get_stations_button = QPushButton("Get Stations", self)
+     self.get_stations_button.clicked.connect(self.get_stations)
+     self.stations_output = QTextEdit(self)
+     self.stations_output.setReadOnly(True)
+
+     # Chatbot elements
+     self.chat_label = QLabel("Ask any climate-related question:")
+     self.chat_input = QLineEdit(self)
+     self.chat_button = QPushButton("Ask Bot", self)
+     self.chat_output = QTextEdit(self)
+     self.chat_output.setReadOnly(True)
+
+     # AI-generated summary positioned below both sections
+     self.summary_label = QLabel("AI Climate Summary:")
+     self.summary_output = QTextEdit(self)
+     self.summary_output.setReadOnly(True)
+
+     # Close application button
+     self.close_button = QPushButton("Close Application", self)
+     self.close_button.clicked.connect(self.close_app)
+
+     # Layout positioning
+     left_layout = QVBoxLayout()
+     left_layout.addWidget(self.map_label)
+     left_layout.addWidget(self.map_widget)  # Upper-left map
+     left_layout.addWidget(self.coord_label)  # Coordinates display
+
+     right_layout = QVBoxLayout()
+     right_layout.addWidget(self.date_label)
+     right_layout.addWidget(QLabel("Start Date:"))
+     right_layout.addWidget(self.start_calendar)
+     right_layout.addWidget(QLabel("End Date:"))
+     right_layout.addWidget(self.end_calendar)
+     right_layout.addWidget(self.island_label)
+     right_layout.addWidget(self.island_input)
+     right_layout.addWidget(self.get_stations_button)
+     right_layout.addWidget(self.stations_output)
+     right_layout.addWidget(self.chat_label)
+     right_layout.addWidget(self.chat_input)
+     right_layout.addWidget(self.chat_button)
+     right_layout.addWidget(self.chat_output)
+     right_layout.addWidget(self.close_button)
+
+     top_layout = QHBoxLayout()
+     top_layout.addLayout(left_layout)
+     top_layout.addLayout(right_layout)
+
+     main_layout = QVBoxLayout()
+     main_layout.addLayout(top_layout)
+     main_layout.addWidget(self.summary_label)
+     main_layout.addWidget(self.summary_output)
+
+     self.setLayout(main_layout)  # FIXED: Properly setting main layout
+
+     # Connect buttons to functions
+     self.get_stations_button.clicked.connect(self.get_stations)
+     self.chat_button.clicked.connect(self.get_weather_data)
+
+
+ def get_stations(self):
+     """Fetch available stations for the given island."""
+     island_code = self.island_input.text().strip().upper()
+     url = f"{api_base_url}/stations?q={{'name':'hcdp_station_metadata'}}&limit=500"
+
+     try:
+         response = requests.get(url, headers=header)
+         response.raise_for_status()
+         stations_data = response.json()
+
+         island_stations = [
+             f"Station ID: {station['value']['skn']}, NWS ID: {station['value'].get('nws_id', 'N/A')}, Name: {station['value']['name']}"
+             for station in stations_data["result"]
+             if station["value"]["island"] == island_code
+         ]
+
+         if island_stations:
+             self.stations_output.setText("\n".join(island_stations))
+         else:
+             self.stations_output.setText(f"No stations found for {island_code}")
+
+     except requests.exceptions.RequestException as req_err:
+         self.stations_output.setText(f"Error fetching stations: {req_err}")
+
+ def get_weather_data(self):
+     """Fetch climate data based on selected lat/lng and generate an AI-driven summary."""
+     start_date = self.start_calendar.selectedDate().toString("yyyy-MM-dd")
+     end_date = self.end_calendar.selectedDate().toString("yyyy-MM-dd")
+
+
+     # Get selected coordinates from embedded map
+     lat = self.map_widget.selected_lat
+     lng = self.map_widget.selected_lng
+     query = "temperature"  # Default query for AI summary (user input optional)
+
+
+     # Determine datatype
+     datatype_map = {
+         "temperature": ("temperature", "max", "°C"),
+         "rainfall": ("rainfall", "new", "mm"),
+         "humidity": ("relative_humidity", None, "%")
+     }
+     datatype, aggregation, unit = datatype_map["temperature"]
+
+
+     # API request URL
+     url = f"{api_base_url}/raster/timeseries?start={start_date}&end={end_date}&lat={lat}&lng={lng}&extent=statewide&datatype={datatype}&aggregation={aggregation or ''}&period=month"
+
+
+     try:
+         response = requests.get(url, headers=header)
+         response.raise_for_status()
+         weather_data = response.json()
+
+
+         values = list(weather_data.values())
+         if values:
+             min_value = min(values)
+             max_value = max(values)
+             avg_value = round(sum(values) / len(values), 2)
+
+             summary_text = f"Between {start_date} and {end_date}, {query} ranged from {min_value}{unit} to {max_value}{unit}, with an average of {avg_value}{unit}."
+
+             chat_response = self.generate_gemini_response(summary_text, query)
+             self.chat_output.setText(chat_response)
+         else:
+             self.chat_output.setText("No data available for the selected period.")
+
+
+     except requests.exceptions.RequestException as req_err:
+         self.chat_output.setText(f"Error fetching data: {req_err}")
+
+ def generate_gemini_response(self, summary_text, query):
+     """Use Google GenAI (Gemini) to generate a conversational response."""
+     contents = [
+         f"You are an AI chatbot specializing in Hawaiian climate data. Given the following summary:\n\n{summary_text}\n\nGenerate a user-friendly response, in paragraph form, explaining climate trends in simple terms for the user's question about '{query}'."
+     ]
+
+     try:
+         response = client.models.generate_content(
+             model="gemini-2.0-flash-001",
+             contents=contents
+         )
+         return response.text
+
+     except Exception as e:
+         return f"Error with Google GenAI: {e}"
+
+if __name__ == "__main__":
+  app = QApplication(sys.argv)
+  climate_chat_app = ClimateChatBot()
+  climate_chat_app.show()
+  sys.exit(app.exec_())
+
+
+
+
